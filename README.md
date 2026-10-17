@@ -23,7 +23,7 @@ One continuous loop: **Observe → Understand → Predict → Recommend → Appr
 | 🔎 **AI root-cause analysis** | Gemini explains *why* a facility is at risk, grounded strictly in the live snapshot — every claim cites a number from the data. |
 | 🔁 **Guarded transfer recommendations** | Gemini proposes stock transfers from pre-filtered surplus donors; the server **clamps every quantity** (≤40% of donor stock, donor keeps >14 days supply) before anything is shown. One click executes the transfer as a Firestore transaction and both facilities re-score live. |
 | 💬 **Health Copilot** | Gemini function-calling over four live-data tools (`getDistrictSummary`, `getFacility`, `getForecasts`, `listFacilities`). Ask in English or Hindi. It can never disagree with the screen, because it reads the same engines. |
-| 🎙️ **Hindi voice updates** | A frontline worker holds a button and says *"आज ओआरएस का स्टॉक 50 बचा है"*. Gemini's audio understanding returns a structured update, the worker confirms on screen, the district re-scores, and the map reacts in seconds. |
+| 🎙️ **Voice updates in 23 languages** | A frontline worker holds a button and says *"आज ओआरएस का स्टॉक 50 बचा है"* — in any of the 22 scheduled Indian languages or English, or let it auto-detect. **Sarvam AI Saaras** transcribes the speech (biased towards the facility's own medicine and test names), Gemini turns the transcript into a structured update, and **Sarvam Bulbul** reads the confirmation back in the worker's language (11 voiced languages; the rest confirm on screen). The worker confirms on screen, the district re-scores, and the map reacts in seconds. If Sarvam is unavailable, Gemini's audio understanding handles the whole step. |
 
 ![Facility intelligence panel](docs/screenshots/02-facility-panel.png)
 
@@ -66,7 +66,7 @@ flowchart LR
     M[Google Maps digital twin]
     P[Facility panel · AI rail · Copilot]
   end
-  V -->|audio| G --> E
+  V -->|audio| S[Sarvam Saaras STT<br/>+ Bulbul read-back] -->|transcript| G --> E
   E --> A --> F
   F -->|onSnapshot realtime| M & P
   P -->|approve| A

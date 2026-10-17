@@ -1,6 +1,8 @@
 import { Type } from "@google/genai";
 import { GeminiUnavailable, generateWithFallback } from "@/lib/gemini";
 import { getFacility } from "@/lib/server/data";
+import { sarvamConfigured, sarvamLanguageCode, transcribe } from "@/lib/sarvam";
+import { AUTO_DETECT, speechLanguage } from "@/lib/speech-languages";
 
 const SCHEMA = {
   type: Type.OBJECT,
@@ -30,13 +32,18 @@ const SCHEMA = {
 };
 
 /** Speech → structured inventory update. NO database write happens here: the
-    worker always confirms on screen before anything is applied. */
+    worker always confirms on screen before anything is applied.
+
+    Primary path: Sarvam Saaras transcribes the Indic speech, then Gemini
+    parses the transcript into structured updates. If Sarvam is unconfigured
+    or fails, Gemini's own audio understanding does both steps. */
 export async function POST(req: Request) {
-  const { audioBase64, mimeType, facilityId, lang } = (await req.json()) as {
+  const { audioBase64, mimeType, facilityId, lang, speechLang } = (await req.json()) as {
     audioBase64: string;
     mimeType: string;
     facilityId: string;
     lang?: string; // "Hindi" | "Marathi" | "English" — the worker's UI language
+    speechLang?: string; // Sarvam code ("ta-IN") or "unknown" to auto-detect
   };
   if (!audioBase64 || !facilityId) return Response.json({ error: "audio and facilityId required" }, { status: 400 });
   // ~30s of opus audio stays well under this; longer means something is wrong.
@@ -45,7 +52,7 @@ export async function POST(req: Request) {
   const facility = await getFacility(facilityId);
   if (!facility) return Response.json({ error: "facility not found" }, { status: 404 });
 
-  const system = `You convert a health worker's spoken update (Hindi, Marathi, English, or mixed) at ${facility.name} into structured updates.
+  const systemFor = (echoLang: string) => `You convert a health worker's spoken update (any Indian language or English, often code-mixed) at ${facility.name} into structured updates.
 
 CURRENT FACILITY STATE (use this to resolve relative statements):
 Medicines (id: name — current stock): ${Object.values(facility.inventory)
@@ -70,32 +77,65 @@ SEMANTICS — "value" is always the NEW TOTAL after the update:
 RULES:
 - Extract EVERY distinct update in the speech — one sentence often contains several (medicines AND beds AND doctors AND tests). Missing one is an error.
 - Map spoken medicine names (e.g. "ओआरएस" → ors, "पैरासिटामोल" → paracetamol) to the listed ids only. Never invent an update that was not spoken.
-- Write "echo" in ${lang || "Hindi"}; when you derived a value, show the arithmetic there (e.g. "Paracetamol: 80 used → 404 left").
+- Write "echo" in ${echoLang}; when you derived a value, show the arithmetic there (e.g. "Paracetamol: 80 used → 404 left").
 - If the speech is not an inventory/beds/doctors/tests update, return empty updates with confidence 0. If a quantity is genuinely ambiguous, lower the confidence below 0.7.`;
+
+  const requested = sarvamLanguageCode(speechLang ?? lang);
+  let spoken = requested === AUTO_DETECT ? null : requested;
+
+  // 1) Sarvam speech-to-text → Gemini text parsing.
+  let sarvamTranscript: string | null = null;
+  if (sarvamConfigured()) {
+    try {
+      const stt = await transcribe({
+        audio: Buffer.from(audioBase64, "base64"),
+        mimeType: mimeType || "audio/webm",
+        languageCode: requested,
+        // Bias recognition towards this facility's vocabulary.
+        keyterms: [...Object.values(facility.inventory).map((i) => i.name), ...Object.keys(facility.tests)],
+      });
+      sarvamTranscript = stt.transcript;
+      spoken = speechLanguage(stt.languageCode)?.code ?? spoken;
+    } catch (e) {
+      console.warn("sarvam stt failed, falling back to gemini audio:", e instanceof Error ? e.message : e);
+    }
+  }
+
+  const echoLang = speechLanguage(spoken)?.english ?? "the same language the worker spoke";
+  const parseConfig = {
+    responseMimeType: "application/json",
+    responseSchema: SCHEMA,
+    systemInstruction: systemFor(echoLang),
+    // Parsing doesn't need thinking, and thinking blows the latency budget.
+    thinkingConfig: { thinkingBudget: 0 },
+  };
 
   try {
     const res = await generateWithFallback({
       contents: [
         {
           role: "user",
-          parts: [
-            { inlineData: { mimeType: mimeType || "audio/webm", data: audioBase64 } },
-            { text: "Convert this spoken update into structured JSON." },
-          ],
+          parts: sarvamTranscript
+            ? [
+                {
+                  text: `Transcript of the spoken update (Sarvam speech recognition):
+"""${sarvamTranscript}"""
+Convert it into structured JSON. Return this transcript verbatim in "transcript".`,
+                },
+              ]
+            : [
+                { inlineData: { mimeType: mimeType || "audio/webm", data: audioBase64 } },
+                { text: "Convert this spoken update into structured JSON." },
+              ],
         },
       ],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: SCHEMA,
-        systemInstruction: system,
-        // Parsing doesn't need thinking, and thinking blows the latency budget.
-        thinkingConfig: { thinkingBudget: 0 },
-        abortSignal: AbortSignal.timeout(55_000),
-      },
+      config: { ...parseConfig, abortSignal: AbortSignal.timeout(sarvamTranscript ? 30_000 : 55_000) },
     });
     const text = res.text;
     if (!text) throw new GeminiUnavailable("empty");
-    return Response.json(JSON.parse(text));
+    const parsed = JSON.parse(text);
+    if (sarvamTranscript) parsed.transcript = sarvamTranscript;
+    return Response.json({ ...parsed, engine: sarvamTranscript ? "sarvam" : "gemini", languageCode: spoken });
   } catch (e) {
     console.error("voice error:", e instanceof Error ? e.message : e);
     return Response.json({ error: "Could not understand the audio. Please try again." }, { status: 502 });

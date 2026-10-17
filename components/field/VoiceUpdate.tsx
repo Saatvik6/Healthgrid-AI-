@@ -1,19 +1,42 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Facility } from "@/lib/engine/types";
 import type { FieldUpdate } from "@/app/api/actions/update-facility/route";
 import type { FieldStrings, Lang } from "@/lib/field-i18n";
-import { LANG_NAME } from "@/lib/field-i18n";
+import { LANG_NAME, LANG_SPEECH_CODE } from "@/lib/field-i18n";
+import { AUTO_DETECT, SPEECH_LANGUAGES, canReadBack } from "@/lib/speech-languages";
+
+const SPEECH_LANG_KEY = "hg-speech-lang";
+
+function storedSpeechLang(): string | null {
+  try {
+    return localStorage.getItem(SPEECH_LANG_KEY);
+  } catch {
+    return null;
+  }
+}
 
 interface VoiceResult {
   updates: FieldUpdate[];
   confidence: number;
   transcript: string;
   echo: string;
+  engine?: "sarvam" | "gemini";
+  languageCode?: string | null; // the language actually spoken (Sarvam code)
 }
 
 type Phase = "idle" | "recording" | "processing" | "confirm" | "saving" | "done" | "retry" | "error";
+
+function SpeakerIcon() {
+  return (
+    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M11 5 6 9H3v6h3l5 4V5z" />
+      <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+      <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+    </svg>
+  );
+}
 
 function MicIcon({ size = 26 }: { size?: number }) {
   return (
@@ -31,6 +54,46 @@ export default function VoiceUpdate({ facility, lang, t }: { facility: Facility;
   const [error, setError] = useState("");
   const recorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
+  const player = useRef<HTMLAudioElement | null>(null);
+  // An explicit pick sticks; otherwise speech follows the screen language.
+  const [pickedSpeechLang, setPickedSpeechLang] = useState<string | null>(storedSpeechLang);
+  const speechLang = pickedSpeechLang ?? LANG_SPEECH_CODE[lang];
+
+  function pickSpeechLang(code: string) {
+    setPickedSpeechLang(code);
+    try {
+      localStorage.setItem(SPEECH_LANG_KEY, code);
+    } catch {
+      // private mode — the pick just won't persist
+    }
+  }
+
+  function stopSpeaking() {
+    player.current?.pause();
+    player.current = null;
+  }
+
+  useEffect(() => () => player.current?.pause(), []);
+
+  /** Sarvam Bulbul reads the confirmation aloud. Best-effort: silence on failure. */
+  async function speak(text: string, languageCode: string) {
+    stopSpeaking();
+    if (!canReadBack(languageCode)) return;
+    try {
+      const res = await fetch("/api/ai/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, lang: languageCode }),
+      });
+      if (!res.ok) return;
+      const { audioBase64, mimeType } = (await res.json()) as { audioBase64: string; mimeType: string };
+      const audio = new Audio(`data:${mimeType};base64,${audioBase64}`);
+      player.current = audio;
+      await audio.play();
+    } catch {
+      // Autoplay blocked or TTS down — the echo is still on screen.
+    }
+  }
 
   async function startRecording() {
     try {
@@ -73,12 +136,14 @@ export default function VoiceUpdate({ facility, lang, t }: { facility: Facility;
       const res = await fetch("/api/ai/voice", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audioBase64, mimeType: "audio/webm", facilityId: facility.id, lang: LANG_NAME[lang] }),
+        body: JSON.stringify({ audioBase64, mimeType: "audio/webm", facilityId: facility.id, lang: LANG_NAME[lang], speechLang }),
       });
       if (!res.ok) throw new Error();
       const data: VoiceResult = await res.json();
       setResult(data);
-      setPhase(data.updates.length === 0 || data.confidence < 0.7 ? "retry" : "confirm");
+      const ok = data.updates.length > 0 && data.confidence >= 0.7;
+      setPhase(ok ? "confirm" : "retry");
+      if (ok && data.echo && data.languageCode) void speak(data.echo, data.languageCode);
     } catch {
       setError(t.audioFailed);
       setPhase("error");
@@ -87,6 +152,7 @@ export default function VoiceUpdate({ facility, lang, t }: { facility: Facility;
 
   async function confirm() {
     if (!result) return;
+    stopSpeaking();
     setPhase("saving");
     const res = await fetch("/api/actions/update-facility", {
       method: "POST",
@@ -113,7 +179,9 @@ export default function VoiceUpdate({ facility, lang, t }: { facility: Facility;
     <section className="rounded-md border border-line bg-surface-1 overflow-hidden">
       <div className="px-4 pt-3 pb-1 flex items-baseline justify-between">
         <div className="rail-label">{t.voiceTitle}</div>
-        <div className="text-ink-3 text-[10px]">Gemini</div>
+        <div className="text-ink-3 text-[10px]">
+          {result?.engine === "gemini" && phase !== "idle" && phase !== "recording" ? "Gemini" : "Sarvam AI"}
+        </div>
       </div>
 
       {(phase === "idle" || phase === "recording") && (
@@ -138,6 +206,22 @@ export default function VoiceUpdate({ facility, lang, t }: { facility: Facility;
             {phase === "recording" ? t.listening : t.holdToTalk}
           </div>
           <div className="text-ink-3 text-xs mt-1">{t.voiceHint}</div>
+          <label className="mt-3 inline-flex items-center gap-2 text-xs text-ink-3">
+            {t.speakingIn}
+            <select
+              value={speechLang}
+              onChange={(e) => pickSpeechLang(e.target.value)}
+              disabled={phase === "recording"}
+              className="rounded border border-line bg-surface-2 px-2 py-1 text-ink-1 text-xs"
+            >
+              <option value={AUTO_DETECT}>{t.autoDetect}</option>
+              {SPEECH_LANGUAGES.map((l) => (
+                <option key={l.code} value={l.code}>
+                  {l.native === l.english ? l.native : `${l.native} · ${l.english}`}
+                </option>
+              ))}
+            </select>
+          </label>
           <div className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-line bg-surface-2 px-3 py-1.5 text-xs text-ink-2">
             <span className="text-ink-3">“</span>
             {t.example}
@@ -174,7 +258,22 @@ export default function VoiceUpdate({ facility, lang, t }: { facility: Facility;
                     );
                   })}
                 </div>
-                {result.echo && <p className="text-ink-3 text-xs mt-2 leading-relaxed">{result.echo}</p>}
+                {result.echo && (
+                  <div className="mt-2 flex items-start justify-between gap-2">
+                    <p className="text-ink-3 text-xs leading-relaxed">{result.echo}</p>
+                    {canReadBack(result.languageCode) && (
+                      <button
+                        onClick={() => speak(result.echo, result.languageCode!)}
+                        aria-label={t.listenAgain}
+                        title={t.listenAgain}
+                        className="shrink-0 inline-flex items-center gap-1 rounded border border-line px-2 py-1 text-[11px] text-ink-2 hover:text-ink-1"
+                      >
+                        <SpeakerIcon />
+                        {t.listenAgain}
+                      </button>
+                    )}
+                  </div>
+                )}
                 <div className="flex gap-2 mt-3">
                   <button
                     onClick={confirm}
@@ -182,7 +281,12 @@ export default function VoiceUpdate({ facility, lang, t }: { facility: Facility;
                   >
                     {t.confirm}
                   </button>
-                  <button onClick={() => setPhase("idle")} className="px-4 py-3 rounded-md text-sm text-ink-3 border border-line hover:text-ink-2">
+                  <button
+                    onClick={() => {
+                      stopSpeaking();
+                      setPhase("idle");
+                    }}
+                    className="px-4 py-3 rounded-md text-sm text-ink-3 border border-line hover:text-ink-2">
                     {t.cancel}
                   </button>
                 </div>

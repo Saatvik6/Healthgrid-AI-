@@ -20,6 +20,9 @@ export interface FieldStrings {
   listening: string;
   understanding: string;
   youSaid: string;
+  listenAgain: string;
+  speakingIn: string;
+  autoDetect: string;
   confirm: string;
   cancel: string;
   notUnderstood: string;
@@ -60,6 +63,9 @@ export const STRINGS: Record<Lang, FieldStrings> = {
     listening: "सुन रहे हैं… छोड़ते ही भेजा जाएगा",
     understanding: "समझा जा रहा है…",
     youSaid: "आपने कहा",
+    listenAgain: "फिर से सुनें",
+    speakingIn: "बोलने की भाषा",
+    autoDetect: "अपने आप पहचानें",
     confirm: "पुष्टि करें",
     cancel: "रद्द करें",
     notUnderstood: "समझ नहीं आया — कृपया धीरे और साफ़ बोलें।",
@@ -98,6 +104,9 @@ export const STRINGS: Record<Lang, FieldStrings> = {
     listening: "ऐकत आहोत… सोडताच पाठवले जाईल",
     understanding: "समजून घेत आहोत…",
     youSaid: "तुम्ही म्हणालात",
+    listenAgain: "पुन्हा ऐका",
+    speakingIn: "बोलण्याची भाषा",
+    autoDetect: "आपोआप ओळखा",
     confirm: "निश्चित करा",
     cancel: "रद्द करा",
     notUnderstood: "समजले नाही — कृपया हळू आणि स्पष्ट बोला.",
@@ -136,6 +145,9 @@ export const STRINGS: Record<Lang, FieldStrings> = {
     listening: "Listening… release to send",
     understanding: "Understanding…",
     youSaid: "You said",
+    listenAgain: "Listen again",
+    speakingIn: "Speaking in",
+    autoDetect: "Auto-detect",
     confirm: "Confirm",
     cancel: "Cancel",
     notUnderstood: "Didn't catch that — please speak slowly and clearly.",
@@ -166,3 +178,6 @@ export const STRINGS: Record<Lang, FieldStrings> = {
 };
 
 export const LANG_NAME: Record<Lang, string> = { hi: "Hindi", mr: "Marathi", en: "English" };
+
+/** Default speaking language for each screen language (Sarvam codes). */
+export const LANG_SPEECH_CODE: Record<Lang, string> = { hi: "hi-IN", mr: "mr-IN", en: "en-IN" };

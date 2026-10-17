@@ -48,6 +48,10 @@ env:
     secret: GEMINI_API_KEY
     availability:
       - RUNTIME
+  - variable: SARVAM_API_KEY
+    secret: SARVAM_API_KEY
+    availability:
+      - RUNTIME
   - variable: FIREBASE_SERVICE_ACCOUNT_B64
     secret: FIREBASE_SERVICE_ACCOUNT_B64
     availability:
